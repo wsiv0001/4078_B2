@@ -3,20 +3,44 @@ import argparse
 import numpy as np
 import pygame
 from contextlib import ExitStack, contextmanager
-from EKF import *
+from labs.lab2.EKF import *
 
 from sphero_unsw.sphero_edu import SpheroEduAPI
 from sphero_env.robot.connect import scan_and_connect
 from sphero_env.robot.robot import Robot
 from sphero_env.envs import SpheroEnv
 
+# group_b2 imports - same as lab1, needed for get_log_path, pid_distance, MAX_SPEED
+from src.dynamics import *
+from src.pid_control import *
+from src.shared_functions import *
+
+# ----------------------- Global constants for lab2.py ----------------------- #
+LAB2_SEED = 0
+DT = 0.1
+
+SESSION_NAME = "session1_SB-DAE7"  # rename this per run - it becomes the folder under logs/lab2_logs/
+
+# Waypoints for --mode waypoints. Reuses the goal used by teleop's env (0.5, 0.5),
+# but you can add more points here if you want a multi-leg PID run.
+WAYPOINTS = np.array([
+    [0.0, 0.5],
+    [0.5, 0.5],
+    [0.5, 0.0],
+    [0.0, 0.0]
+], dtype=np.float32)
+
+GOAL_TOLERANCE = 0.1
+WAIT_STEPS = 20         # steps to sit at each waypoint (DT=0.1 -> 2s)
+MAX_TOTAL_STEPS = 2000  # safety cap
+
 
 ### Control loop to handle the action and update the environments,
 # edit this to include the EKF prediction and update steps, and to visualize the belief state in the simulator.
-def control_loop(env, ekf, robot_env=None,action=None, moving=False):
+def teleop_control_loop(env, ekf, robot_env=None, action=None, moving=False):
     """
-    Control loop to handle the action and update the environments.
-    This function is called in the main loop to step both the simulator and the robot (if connected).
+    Teleop control loop: apply the keyboard-driven action, step sim (+ robot if connected),
+    update the EKF, and visualize the belief state.
     """
     # Step simulator directly and update its logging/visualization state.
     sim_obs, _, _, _, sim_info = env.step(action)
@@ -39,8 +63,84 @@ def control_loop(env, ekf, robot_env=None,action=None, moving=False):
 
     env.vis.set_belief(ekf.state_est, ekf.P)  # Update the simulator with the EKF state estimate to visualise the belief state
 
-
     env.render()
+
+
+def waypoint_control_loop(env, ekf, robot_env=None, waypoints=WAYPOINTS,
+                           wait_steps=WAIT_STEPS, goal_tolerance=GOAL_TOLERANCE,
+                           max_total_steps=MAX_TOTAL_STEPS):
+    """
+    PID-controlled waypoint following, structured like lab1's control_loop, but still
+    running the EKF predict/update + belief visualization each step like lab2's teleop
+    loop does. Drives the real robot alongside the sim if robot_env is connected.
+
+    Press SPACE (or close the pygame window) to abort early - useful since this can
+    drive the real robot unattended.
+    """
+    initial_heading = np.arctan2(waypoints[0][0], waypoints[0][1], dtype=np.float32)
+
+    obs, _ = env.reset(seed=LAB2_SEED, options={"initial_heading": initial_heading})
+    if robot_env is not None:
+        robot_env.reset(seed=LAB2_SEED, options={"initial_heading": initial_heading})
+
+    waypoint_idx = 0
+    wait_counter = 0
+    waypoint_reached = False
+    heading = initial_heading
+
+    for _ in range(max_total_steps):
+        # Allow aborting mid-run (esp. important when driving the real robot).
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT or (
+                event.type == pygame.KEYDOWN and event.key in (pygame.K_SPACE, pygame.K_q)
+            ):
+                print("Waypoint run aborted.")
+                if robot_env is not None:
+                    robot_env.emergency_stop()
+                return
+
+        if waypoint_idx >= len(waypoints):
+            break
+
+        target = waypoints[waypoint_idx]
+        # Drive off the EKF belief rather than raw obs, since that's the whole point of lab2.
+        pos = np.asarray(ekf.state_est[:2])
+        delta = target - pos
+        distance = np.linalg.norm(delta)
+
+        if not waypoint_reached and distance <= goal_tolerance:
+            waypoint_reached = True  # latch - ignore distance from here until we move on
+
+        if not waypoint_reached:
+            heading = np.arctan2(delta[0], delta[1], dtype=np.float32)
+            speed_cmd = np.clip(
+                pid_distance.compute(0.0, distance),
+                -MAX_SPEED, MAX_SPEED)
+            action = np.array([speed_cmd, heading], dtype=np.float32)
+        elif wait_counter < wait_steps:
+            action = np.array([0.0, heading], dtype=np.float32)
+            wait_counter += 1
+        else:
+            print(f"Waypoint {waypoint_idx} reached!")
+            waypoint_idx += 1
+            wait_counter = 0
+            waypoint_reached = False
+            pid_distance.reset()
+            continue
+
+        sim_obs, _, _, _, sim_info = env.step(action)
+        if robot_env is not None:
+            robot_obs, _, _, _, robot_info = robot_env.step(action)
+
+        ekf.predict(action)
+        ekf.update(robot_obs if robot_env is not None else sim_obs)
+
+        env.vis.set_belief(ekf.state_est, ekf.P)
+        env.render()
+
+    if robot_env is not None:
+        robot_env.emergency_stop()
+
 
 # This function creates a new simulator environment
 def make_sim_env():
@@ -79,8 +179,9 @@ def make_real_env(api):
 @contextmanager
 def managed_sim_env():
     env = make_sim_env()
-    # Set up logging for the simulator environment
-    env.set_log_path("logs/lab2_sim.csv")
+    # Same logging helper as lab1, so sim logs land under logs/lab2_logs/<SESSION_NAME>/
+    sim_log_path = get_log_path(SESSION_NAME, is_real=False)
+    env.set_log_path(sim_log_path)
     env.reset()
     env.start_logging()
     try:
@@ -97,7 +198,9 @@ def managed_robot_env():
 
     with SpheroEduAPI(selected_toy) as api:
         robot_env = make_real_env(api)
-        robot_env.set_log_path("logs/lab2_robot.csv")
+        # Same logging helper as lab1, so robot logs land under logs/lab2_logs/<SESSION_NAME>/
+        real_log_path = get_log_path(SESSION_NAME, is_real=True)
+        robot_env.set_log_path(real_log_path)
         robot_env.reset()
         robot_env.start_logging()
         try:
@@ -108,12 +211,14 @@ def managed_robot_env():
             robot_env.close()
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Teleoperate Sphero with optional simulator-only mode")
+    parser = argparse.ArgumentParser(description="Teleoperate or waypoint-drive Sphero with optional simulator-only mode")
     parser.add_argument("--sim", action="store_true", help="Run simulator-only mode (no robot connection)")
+    parser.add_argument("--mode", choices=["teleop", "waypoints"], default="teleop",
+                         help="teleop: drive with keyboard (default). waypoints: run the lab1-style PID waypoint controller.")
     return parser.parse_args()
 
-def main(sim_only=False):
-    """Main function for teleoperation of Sphero robot with simulator."""
+def main(sim_only=False, mode="teleop"):
+    """Main function for teleoperation or waypoint-driving of Sphero robot with simulator."""
     with ExitStack() as stack:
         env = stack.enter_context(managed_sim_env())
         robot_env = stack.enter_context(managed_robot_env()) if not sim_only else None
@@ -123,10 +228,18 @@ def main(sim_only=False):
         ekf = EKF(dt=0.1)  # Initialize the EKF for state estimation
 
         stack.callback(pygame.quit)
-        stack.callback(lambda: print("Stopped. Teleop closed."))
+        stack.callback(lambda: print("Stopped."))
 
-        mode_text = "Simulator only" if sim_only else "Robot + Simulator"
-        print(f"\nTele-op ready ({mode_text}):")
+        mode_label = "Simulator only" if sim_only else "Robot + Simulator"
+
+        if mode == "waypoints":
+            print(f"\nWaypoint run ready ({mode_label}). Driving through {len(WAYPOINTS)} waypoint(s).")
+            print("  SPACE / Q = abort\n")
+            waypoint_control_loop(env, ekf=ekf, robot_env=robot_env)
+            print("Waypoint run complete.")
+            return
+
+        print(f"\nTele-op ready ({mode_label}):")
         print("  W       = move forward")
         print("  A/D     = turn left/right")
         print("  S       = move backward")
@@ -198,7 +311,7 @@ def main(sim_only=False):
             # Create action [v, theta]
             action = np.array([v_cmd, current_heading], dtype=np.float32)
 
-            control_loop(env, ekf=ekf, robot_env=robot_env, action=action, moving=moving)  # Call the control loop to handle the action and update the environments
+            teleop_control_loop(env, ekf=ekf, robot_env=robot_env, action=action, moving=moving)
 
             if robot_env is not None:
                 time.sleep(0.01)  # Small delay to prevent busy-waiting
@@ -207,4 +320,4 @@ def main(sim_only=False):
 
 if __name__ == "__main__":
     args = parse_args()
-    main(sim_only=args.sim)
+    main(sim_only=args.sim, mode=args.mode)

@@ -1,8 +1,6 @@
 import numpy as np
-
-### Custom dynamics function for the Sphero robot - replace this with the one you developed in Lab 1
-def wrap_angle(angle):
-    return (angle + np.pi) % (2.0 * np.pi) - np.pi  # Normalize to [-pi, pi)
+from src.shared_functions import *
+from src.dynamics import *
 
 def dynamics(state, action):
         """
