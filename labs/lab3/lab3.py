@@ -36,7 +36,7 @@ COMMANDED_MAX_SPEED = VELOCITY_LIMIT
 SIM_SPEED_SCALE = REAL_TOP_SPEED_MPS / COMMANDED_MAX_SPEED
 
 MAX_TURN_RATE = 7.0
-MAX_ACCEL = 0.2
+MAX_ACCEL = 0.15
 
 def dynamics(state, action):
     """
@@ -53,16 +53,13 @@ def dynamics(state, action):
     heading_new = wrap_angle(heading + np.clip(heading_error, -max_turn_delta, max_turn_delta))
 
     # --- Speed: ramp toward target speed at a limited rate ---
-    MAX_ACCEL = 0.15  # max speed change per second
     max_speed_delta = MAX_ACCEL * DT
     speed_error = speed_cmd - speed
     speed_new = speed + np.clip(speed_error, -max_speed_delta, max_speed_delta)
     speed_new = np.clip(speed_new, 0.0, 1.0)
 
-    SPEED_TO_MPS = 35.0
-
-    x_new = x + speed_new * SPEED_TO_MPS * np.sin(heading_new) * DT
-    y_new = y + speed_new * SPEED_TO_MPS * np.cos(heading_new) * DT
+    x_new = x + speed_new * SIM_SPEED_SCALE * np.sin(heading_new) * DT
+    y_new = y + speed_new * SIM_SPEED_SCALE * np.cos(heading_new) * DT
 
     return np.array([x_new, y_new, heading_new, speed_new], dtype=np.float32)
 
@@ -227,7 +224,6 @@ def control_loop(control_env):
         control_env.render()
 
     control_env.emergency_stop()
-
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
