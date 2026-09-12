@@ -22,9 +22,9 @@ RENDER_MODE = True
 
 WAYPOINTS = np.array([
     [0.0, 0.5],
-    [0.5, 0.5],
-    [0.5, 0.0],
-    [0.0, 0.0]
+    [0.25, 0.5],
+    [0.25, 1],
+    [1, 1]
 ], dtype=np.float32)
 
 GOAL_TOLERANCE = 0.05
