@@ -15,7 +15,7 @@ from contextlib import ExitStack, contextmanager
 
 LAB1_SEED = 0
 MAX_STEPS = 5000
-GOAL_TOLERANCE = 0.1
+GOAL_TOLERANCE = 0.05
 WAYPOINT_PAUSE_STEPS = 10  # steps to pause/settle at each waypoint before moving on
 map = build_occupancy_grid()
 
@@ -35,36 +35,38 @@ REAL_TOP_SPEED_MPS = 4
 COMMANDED_MAX_SPEED = VELOCITY_LIMIT
 SIM_SPEED_SCALE = REAL_TOP_SPEED_MPS / COMMANDED_MAX_SPEED
 
-MAX_TURN_RATE = 100
+MAX_TURN_RATE = 7.0
 MAX_ACCEL = 0.2
 
-from src.dynamics import *
+def dynamics(state, action):
+    """
+    action = [speed, heading_cmd] — both speed and heading are now TARGETS.
+    The robot ramps toward the target speed, and turns toward the target
+    heading at a limited rate, rather than snapping to either instantly.
+    """
+    x, y, heading, speed = state
+    speed_cmd, heading_cmd = action
 
-# def dynamics(state, action):
-#     x, y, heading, speed = state
-#     speed_cmd, heading_cmd = action
+    # --- Heading: turn toward target heading at a limited rate ---
+    heading_error = wrap_angle(heading_cmd - heading)
+    max_turn_delta = MAX_TURN_RATE * DT
+    heading_new = wrap_angle(heading + np.clip(heading_error, -max_turn_delta, max_turn_delta))
 
-#     #Heading: unchanged
+    # --- Speed: ramp toward target speed at a limited rate ---
+    MAX_ACCEL = 0.15  # max speed change per second
+    max_speed_delta = MAX_ACCEL * DT
+    speed_error = speed_cmd - speed
+    speed_new = speed + np.clip(speed_error, -max_speed_delta, max_speed_delta)
+    speed_new = np.clip(speed_new, 0.0, 1.0)
 
-#     heading_error = wrap_angle(heading_cmd - heading)
-#     max_turn_delta = MAX_TURN_RATE * DT
-#     heading_new = wrap_angle(heading + np.clip(heading_error, -max_turn_delta, max_turn_delta))
-#     # heading_new = wrap_angle(heading+heading_error)
+    SPEED_TO_MPS = 35.0
 
-#     # Speed: ramp toward target speed, still in "commanded" units
-#     max_speed_delta = MAX_ACCEL * DT
-#     speed_error = speed_cmd - speed
-#     speed_new = speed + np.clip(speed_error, -max_speed_delta, max_speed_delta)
-#     # speed_new = speed + speed_error
-#     speed_new = np.clip(speed_new, 0.0, COMMANDED_MAX_SPEED)
+    x_new = x + speed_new * SPEED_TO_MPS * np.sin(heading_new) * DT
+    y_new = y + speed_new * SPEED_TO_MPS * np.cos(heading_new) * DT
 
-#     # Position: this is the only place the real-world scale enters
-#     x_new = x + speed_new * SIM_SPEED_SCALE * np.sin(heading_new) * DT
-#     y_new = y + speed_new * SIM_SPEED_SCALE * np.cos(heading_new) * DT
+    return np.array([x_new, y_new, heading_new, speed_new], dtype=np.float32)
 
-#     return np.array([x_new, y_new, heading_new, speed_new], dtype=np.float32)
-
-### If needed, add the EKF from lab 2 here too, and integrate below.
+## If needed, add the EKF from lab 2 here too, and integrate below.
 
 class Controller:
     def __init__(self, dt=0.1):
@@ -97,10 +99,10 @@ def make_sim_env():
         occupancy_grid=map,
         grid_resolution=0.125,
         dynamics=dynamics,
-        obs_noise_std_pos=0.05,
-        process_noise_std_speed=0.005,
-        process_noise_std_heading=0.01,
-        obs_noise_std_vel=0.025,
+        obs_noise_std_pos=0.0,
+        process_noise_std_speed=0.00,
+        process_noise_std_heading=0.0,
+        obs_noise_std_vel=0.0,
         render_mode="human",
         window_size=(800, 800),
     )
@@ -181,44 +183,48 @@ def control_loop(control_env):
     planner.debug_print(waypoints)
     planner.debug_plot(obs[:2], control_env.goal_pos, waypoints)
 
-    steps = 0
-    goal_reached = False
+    # --- Waypoint-following state (ported from lab1's control_loop) ---
+    waypoint_idx = 0
+    wait_counter = 0
+    waypoint_reached = False  # latch: once True, ignore distance until we advance
+    heading = obs[2]
 
-    for waypoint in waypoints:
-        # control_env.goal_pos = waypoint
-        if goal_reached:
+    for _ in range(MAX_STEPS):
+        if waypoint_idx >= len(waypoints):
             break
 
-        # Keep stepping toward THIS waypoint until we actually reach it
-        # (or run out of steps) before moving on to the next one.
-        reached_waypoint = False
-        while not reached_waypoint and steps < MAX_STEPS:
-            action = controller.compute_action(obs, waypoint)
-            raw_obs, _, terminated, truncated, info = control_env.step(action)
-            obs = to_map_frame(raw_obs)
-            steps += 1
+        target = waypoints[waypoint_idx]
+        pos = obs[:2]
+        delta = target - pos
+        distance = np.linalg.norm(delta)
 
-            control_env.render()
+        # Also check the actual goal directly, since the final grid waypoint
+        # can sit slightly off control_env.goal_pos after quantization.
+        goal_delta = obs[:2] - np.asarray(control_env.goal_pos, dtype=np.float32)
+        if np.dot(goal_delta, goal_delta) < control_env.goal_tolerance ** 2:
+            break  # Goal reached
 
-            if (obs[0]-waypoint[0])**2 + (obs[1]-waypoint[1])**2 < control_env.goal_tolerance**2:
-                reached_waypoint = True  # Move on to the next waypoint
+        if not waypoint_reached and distance <= GOAL_TOLERANCE:
+            waypoint_reached = True  # latch — ignore distance from here until we move on
 
-            if (obs[0]-control_env.goal_pos[0])**2 + (obs[1]-control_env.goal_pos[1])**2 < control_env.goal_tolerance**2:
-                goal_reached = True
-                break  # Goal reached, stop stepping toward this waypoint
+        if not waypoint_reached:
+            action = controller.compute_action(obs, target)
+            heading = action[1]
+        elif wait_counter < WAYPOINT_PAUSE_STEPS:
+            action = (0.0, heading)  # zero speed, hold current heading and settle
+            wait_counter += 1
+        else:
+            print(f"Waypoint {waypoint_idx} reached!")
+            waypoint_idx += 1
+            wait_counter = 0
+            waypoint_reached = False
+            pid_distance.reset()
+            continue
 
-        # Pause at the waypoint for a few steps (commanding zero speed)
-        # before heading toward the next one - lets the robot settle
-        # instead of immediately carrying momentum into the next turn.
-        if reached_waypoint and not goal_reached:
-            stop_action = (0.0, obs[2])  # zero speed, hold current heading
-            for _ in range(WAYPOINT_PAUSE_STEPS):
-                if steps >= MAX_STEPS:
-                    break
-                raw_obs, _, terminated, truncated, info = control_env.step(stop_action)
-                obs = to_map_frame(raw_obs)
-                steps += 1
-                control_env.render()
+        raw_obs, _, terminated, truncated, info = control_env.step(action)
+        obs = to_map_frame(raw_obs)
+
+        control_env.render()
 
     control_env.emergency_stop()
 
