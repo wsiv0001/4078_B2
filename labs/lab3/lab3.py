@@ -87,6 +87,8 @@ def make_real_env(api):
         world_height=5.0,
         goal_pos=(0.5, 0.5),
         goal_tolerance=GOAL_TOLERANCE,
+        obs_noise_std_pos=1.1e-4,
+        obs_noise_std_vel=0.0,
         render_mode="human",
         window_size=(800, 800),
     )
