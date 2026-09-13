@@ -24,14 +24,10 @@ SESSION_NAME = "session1_SB-DAE7"  # rename this per run - it becomes the folder
 # Waypoints for --mode waypoints. Reuses the goal used by teleop's env (0.5, 0.5),
 # but you can add more points here if you want a multi-leg PID run.
 WAYPOINTS = np.array([
-    (0.00, 0.00),   # origin
-    (0.50, 0.00),   # +x straight
-    (0.50, 0.50),   # +y straight (90° turn)
-    (0.00, 0.50),   # -x straight
-    (0.00, 0.00),   # -y straight, back to origin (closes the loop)
-    (0.35, 0.35),   # diagonal (45° heading, tests non-axis-aligned drift)
-    (0.15, 0.50),   # oblique turn (tests non-90° turn drift)
-    (0.00, 0.00),   # return to origin again
+    [0.0, 0.5],
+    [0.5, 0.5],
+    [0.5, 0.0],
+    [0.0, 0.0]
 ], dtype=np.float32)
 
 GOAL_TOLERANCE = 0.1
@@ -70,7 +66,7 @@ def teleop_control_loop(env, ekf, robot_env=None, action=None, moving=False):
     env.render()
 
 
-def print_assessment_metrics(position_errors, position_covariances, nis_history=None):
+def print_assessment_metrics(position_errors, position_covariances):
     """
     Lab 2 assessment metrics.
 
@@ -143,22 +139,6 @@ def print_assessment_metrics(position_errors, position_covariances, nis_history=
     print(f"95% chi-square gate (2 DoF):    {chi_square_95:.3f}")
     print()
     print(f"Mean squared Mahalanobis:       {np.mean(mahalanobis_squared):.3f}")
-    print("=" * 55 + "\n")
-
-    print(f"Mean squared Mahalanobis:       {np.mean(mahalanobis_squared):.3f}")
-
-    if nis_history:
-        nis_arr = np.asarray(nis_history)
-        mean_nis = np.mean(nis_arr)
-        # For a 2D position measurement, a well-tuned EKF has mean NIS ~ 2
-        # (the chi-square(2) expectation), with ~95% of individual values
-        # falling inside [0.0506, 7.378] (two-sided 95% chi-square(2) bounds).
-        lower, upper = 0.0506, 7.378
-        within_bounds = np.mean((nis_arr >= lower) & (nis_arr <= upper))
-        print()
-        print(f"Mean NIS:                        {mean_nis:.3f}  (target ≈ 2.0)")
-        print(f"NIS within 95% bounds:           {within_bounds:.1%}  (target ≈ 95%)")
-
     print("=" * 55 + "\n")
 
 
@@ -274,7 +254,7 @@ def waypoint_control_loop(env, ekf, robot_env=None, waypoints=WAYPOINTS,
         robot_env.emergency_stop()
 
     print("Waypoint run complete.")
-    print_assessment_metrics(position_errors, position_covariances, nis_history)
+    print_assessment_metrics(position_errors, position_covariances)
     plot_nis(nis_history)
 
 # This function creates a new simulator environment
