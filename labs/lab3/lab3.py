@@ -12,11 +12,29 @@ import matplotlib.pyplot as plt
 from labs.lab3.Planner import *
 from src.pid_control import *
 from src.shared_functions import *  # wrap_angle, get_log_path
-from sphero_env.envs.custom_maze_full import build_occupancy_grid
 from src.dynamics import *
 from src.EKF import *
 
 from contextlib import ExitStack, contextmanager
+
+#============================== MAZE SELECTION =================================
+# Switch mazes by changing ONLY this import. Any maze module used here must
+# expose the same interface that custom_maze_full.py does:
+#   build_occupancy_grid()        -> np.ndarray occupancy grid
+#   START_CELL, GOAL_CELL         -> logical (x, y) cell tuples
+#   cell_to_world(cell)           -> world-frame np.array([x, y])
+#   GRID_RESOLUTION, PLATE_SIZE   -> metres
+#   maze_width(), maze_height()   -> logical grid dimensions
+#
+# e.g. to run a different physical layout, swap the line below for:
+#   import sphero_env.envs.custom_maze_2 as MAZE
+#
+# To run a randomly generated maze instead of the fixed physical one
+# (SIM ONLY - see procedural_maze.py's docstring for why), swap it for:
+#   import sphero_env.envs.procedural_maze as MAZE
+import sphero_env.envs.custom_maze_full as MAZE
+
+print(MAZE.__file__)
 
 #============================== GLOBALS =================================
 
@@ -24,14 +42,16 @@ LAB1_SEED = 0
 MAX_STEPS = 5000
 GOAL_TOLERANCE = 0.03
 WAYPOINT_PAUSE_STEPS = 10  # steps to pause/settle at each waypoint before moving on
-map = build_occupancy_grid()
+map = MAZE.build_occupancy_grid()
 
 # Rename this per run - becomes the folder under logs/lab3_logs/
 SESSION_NAME = "session4_SB-DAE7_EKF - with noise"
 
-# World-frame position of the maze's designated starting plate
-# (matches START_CELL in sphero_env.envs.custom_maze_full).
-KNOWN_START_WORLD = np.array([-0.5, -0.5])
+# World-frame position of the maze's designated start/goal plates, derived
+# from MAZE.START_CELL / MAZE.GOAL_CELL rather than hardcoded - so changing
+# MAZE above automatically updates the frame offset and goal position too.
+KNOWN_START_WORLD = MAZE.cell_to_world(MAZE.START_CELL)
+GOAL_WORLD = MAZE.cell_to_world(MAZE.GOAL_CELL)
 
 #============================== CONTROLLER AND ENVIRONMENTS =================================
 
@@ -59,12 +79,12 @@ def make_sim_env():
         dt=DT,
         max_steps=MAX_STEPS,
         vel_limit=VELOCITY_LIMIT,
-        world_width=1.25,
-        world_height=1.25,
-        goal_pos=(0.5, 0.5),
+        world_width=MAZE.maze_width() * MAZE.PLATE_SIZE,
+        world_height=MAZE.maze_height() * MAZE.PLATE_SIZE,
+        goal_pos=tuple(GOAL_WORLD),
         goal_tolerance=GOAL_TOLERANCE,
         occupancy_grid=map,
-        grid_resolution=0.125,
+        grid_resolution=MAZE.GRID_RESOLUTION,
         dynamics=dynamics,
         obs_noise_std_pos=1.1e-4,
         process_noise_std_speed=0.00,
@@ -82,7 +102,7 @@ def make_real_env(api):
         vel_limit=VELOCITY_LIMIT,
         world_width=5.0,
         world_height=5.0,
-        goal_pos=(0.5, 0.5),
+        goal_pos=tuple(GOAL_WORLD),
         goal_tolerance=GOAL_TOLERANCE,
         obs_noise_std_pos=0.0,
         obs_noise_std_vel=0.0,
@@ -92,6 +112,17 @@ def make_real_env(api):
 
 @contextmanager
 def managed_env(sim: bool):
+    if not sim and getattr(MAZE, "SIM_ONLY", False):
+        # Safety guard: a procedurally generated maze's walls only exist in
+        # the simulator's collision model, not physically in the lab room.
+        # Refuse to drive the real robot against a maze module that admits
+        # it's sim-only, instead of silently planning around walls that
+        # aren't there (or missing ones that are).
+        raise RuntimeError(
+            f"{MAZE.__name__} is marked SIM_ONLY - re-run with --sim, "
+            f"or switch MAZE at the top of this file to a physical maze "
+            f"module before running against the real robot."
+        )
     if sim:
         sim_log_path = get_log_path(SESSION_NAME, is_real=False)
         sim_env = make_sim_env()
@@ -134,8 +165,10 @@ def control_loop(control_env):
     if isinstance(control_env, SpheroEnv):
         # Sim: force a known start position - SpheroEnv respects this override,
         # so obs is already in the map's world frame once we read it back.
-        control_env.state_true[0:3] = np.array([-0.5, -0.5, 0.0])
-        control_env.state_odom[0:3] = np.array([-0.5, -0.5, 0.0])
+        # Uses KNOWN_START_WORLD (derived from MAZE.START_CELL above) so this
+        # stays correct automatically if MAZE is switched to a different layout.
+        control_env.state_true[0:3] = np.array([*KNOWN_START_WORLD, 0.0])
+        control_env.state_odom[0:3] = np.array([*KNOWN_START_WORLD, 0.0])
         obs = control_env.state_true.copy()
         local_obs0 = obs.copy()
         frame_offset = np.zeros(2)
@@ -163,7 +196,7 @@ def control_loop(control_env):
         return state
 
     controller = Controller(dt=control_env.dt)
-    planner = Planner(map=map, dt=control_env.dt)
+    planner = Planner(map=map, dt=control_env.dt, resolution=MAZE.GRID_RESOLUTION)
 
     # --- EKF setup ---
     # obs at this point is already in the map frame (see above), so the EKF

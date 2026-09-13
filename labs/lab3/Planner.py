@@ -4,12 +4,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from sphero_env.envs.custom_maze_full import build_occupancy_grid
+from src.dynamics import *
 
 map = build_occupancy_grid()
 
 ### Implement a planner and controller for the Sphero robot to navigate to a goal position in the environment.
 class Planner:
-    def __init__(self, map, dt=0.1, resolution=0.125):
+    def __init__(self, map, dt=DT, resolution=0.125):
         """
         The map (input) is the occupancy grid produced by the maze generator:
             map : a 2D numpy array of shape (h, w) with values in {0, 1}
