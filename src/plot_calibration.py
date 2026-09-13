@@ -19,7 +19,7 @@ from src.shared_functions import wrap_angle
 
 # --- Set these to the two logs you want to compare --------------------------
 SIM_LOG_PATH = "logs/lab1_logs/session1_SB-DAE7/sim/lab1_sim.csv"
-REAL_LOG_PATH = "logs/lab1_logs/session1_SB-DAE7/real/lab1_real_2026-09-08_00-54-37.csv"
+REAL_LOG_PATH = "logs/lab1_logs/session2_SB-DAE7 - EKF NOISE/real/lab1_real_2026-09-13_15-14-22.csv"
 
 DT = 0.1  # must match the dt used in dynamics.py / lab1.py
 

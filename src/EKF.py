@@ -55,7 +55,7 @@ class EKF:
         ])
 
         # Process noise covariance
-        self.Q = 2*np.diag([
+        self.Q = 1.5*np.diag([
             1e-3,   # x model noise
             1e-3,   # y model noise
             1e-2,   # heading model noise
@@ -64,7 +64,7 @@ class EKF:
 
         # Measurement noise covariance
         # self.R = np.diag([2.43124e-2,2.34517e-2])
-        self.R = 2*np.array([
+        self.R = 1.5*np.array([
             [2.43642832e-02, -8.96859747e-04],
             [-8.96859747e-04, 3.46949137e-02]
         ])

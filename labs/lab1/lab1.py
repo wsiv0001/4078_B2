@@ -21,11 +21,14 @@ DT = 0.1
 RENDER_MODE = True
 
 WAYPOINTS = np.array([
-    [0.0, 0.0],
+  (0, 0.5),
+  (0.25, 0.5),
+  (0.25, 1),
+  (1, 1)
 ], dtype=np.float32)
 
 GOAL_TOLERANCE = 0.05
-WAIT_STEPS = 1000        # steps to sit at each waypoint (DT=0.1 -> 2s)
+WAIT_STEPS = 20        # steps to sit at each waypoint (DT=0.1 -> 2s)
 MAX_TOTAL_STEPS = 2000  # safety cap
 
 # ---------------------------------------------------------------------------- #
@@ -109,6 +112,16 @@ def control_loop(control_env, waypoints=WAYPOINTS, wait_steps=WAIT_STEPS):
         options={"initial_heading": initial_heading}
     )
 
+    # When driving the real robot, also run the pure dynamics model in parallel
+    # with the same actions, starting from the robot's settled post-reset pose,
+    # and push its predicted path to the visualiser as a blue overlay line
+    # (visualiser.py draws the "odom" overlay slot in blue). This is skipped in
+    # sim mode, since the sim env's own trace already IS that model's response.
+    show_sim_overlay = isinstance(control_env, Robot)
+    if show_sim_overlay:
+        sim_state = control_env.state_true.copy()
+        sim_traj = [tuple(sim_state[:2])]
+
     waypoint_idx = 0
     wait_counter = 0
     waypoint_reached = False
@@ -144,6 +157,12 @@ def control_loop(control_env, waypoints=WAYPOINTS, wait_steps=WAIT_STEPS):
             continue
 
         obs, _, terminated, truncated, info = control_env.step(action)
+
+        if show_sim_overlay:
+            sim_state = dynamics(sim_state, np.array(action, dtype=np.float32))
+            sim_traj.append(tuple(sim_state[:2]))
+            control_env.vis.set_overlay_trajectories(odom=np.array(sim_traj, dtype=np.float32))
+
         if RENDER_MODE:
             control_env.render()
 

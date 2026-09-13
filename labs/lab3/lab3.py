@@ -21,7 +21,7 @@ from contextlib import ExitStack, contextmanager
 
 LAB1_SEED = 0
 MAX_STEPS = 5000
-GOAL_TOLERANCE = 0.05
+GOAL_TOLERANCE = 0.03
 WAYPOINT_PAUSE_STEPS = 10  # steps to pause/settle at each waypoint before moving on
 map = build_occupancy_grid()
 
