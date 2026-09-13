@@ -7,6 +7,7 @@ from sphero_env.envs import SpheroEnv
 import argparse
 import os
 import numpy as np
+import matplotlib.pyplot as plt
 
 from labs.lab3.Planner import *
 from src.pid_control import *
@@ -125,12 +126,19 @@ def control_loop(control_env):
 
     obs, _ = control_env.reset(seed=LAB1_SEED)
 
+    # Keep a copy of the very first reading in the robot's own raw LOCAL
+    # frame (before any map-frame offset is applied) - this is the common
+    # seed for the odometry trace and the open-loop dynamics rollout below,
+    # so all debug traces start from the exact same point.
+    local_obs0 = obs.copy()
+
     if isinstance(control_env, SpheroEnv):
         # Sim: force a known start position - SpheroEnv respects this override,
         # so obs is already in the map's world frame once we read it back.
         control_env.state_true[0:3] = np.array([-0.5, -0.5, 0.0])
         control_env.state_odom[0:3] = np.array([-0.5, -0.5, 0.0])
         obs = control_env.state_true.copy()
+        local_obs0 = obs.copy()
         frame_offset = np.zeros(2)
     else:
         # Real robot: the override above doesn't affect real hardware, so
@@ -189,43 +197,101 @@ def control_loop(control_env):
     planner.debug_plot(est_state[:2], control_env.goal_pos, waypoints, save_path=plot_path)
 
     # --- Waypoint-following state (ported from lab1's control_loop) ---
-    waypoint_idx = 0
+    waypoint_idx = -1  # -1 = boot-settle phase, before waypoint following begins
     wait_counter = 0
     waypoint_reached = False  # latch: once True, ignore distance until we advance
     heading = est_state[2]
+
+    # Number of steps to hold zero-speed for during the boot-settle phase,
+    # replacing the earlier time.sleep(3) in managed_env. Doing this as
+    # actual zero-speed control_env.step() calls (rather than an external
+    # sleep) actively keeps pinging the robot while its onboard dynamics
+    # finishes booting, and - just as importantly - it means the EKF, the
+    # open-loop dynamics rollout, and the odometry trace are all logged
+    # through this phase too, so every trace starts from the exact same
+    # synchronized point once real waypoint-following begins. A plain sleep
+    # outside the loop left the robot possibly still not fully responsive
+    # once the first real commands went out, which is what caused the
+    # dynamics-prediction trace to diverge early in the last run.
+    BOOT_WAIT_SECONDS = 2.0
+    boot_wait_steps = max(1, int(round(BOOT_WAIT_SECONDS / control_env.dt)))
+
+    # --- Debug traces, all kept in the robot's raw LOCAL frame ---
+    # - odom_trace:  the robot's own position estimate. In sim this is
+    #   control_env.state_odom; on the real robot, raw_obs itself already
+    #   IS this signal - the Sphero API reports its own dead-reckoned
+    #   position, not ground truth, so no separate "odometry" attribute
+    #   exists or is needed on the Robot class.
+    # - gt_trace: ground truth, only available in sim (no equivalent on
+    #   real hardware).
+    # - dyn_trace: a pure OPEN-LOOP rollout of the dynamics() model, seeded
+    #   from local_obs0 and advanced only using dynamics(dyn_state, action)
+    #   each step - never corrected by any measurement. This isolates what
+    #   the model itself predicts, independent of what the robot/EKF
+    #   actually reports, so any mismatch against odom_trace is purely a
+    #   dynamics-model error.
+    # - ekf_trace: the EKF's filtered estimate, converted back to local
+    #   frame for direct comparison with the traces above.
+    gt_trace = []
+    odom_trace = [local_obs0[:2].copy()]
+    # dynamics() unpacks its state as exactly (x, y, heading, speed) - slice
+    # explicitly rather than copying local_obs0 wholesale, since the real
+    # robot's observation vector can carry extra trailing fields (e.g. raw
+    # velocity components, battery, timestamp) beyond just these 4, which
+    # would otherwise break the unpack inside dynamics().
+    dyn_state = np.array(local_obs0[:4], dtype=np.float32)
+    dyn_trace = [dyn_state[:2].copy()]
+    ekf_trace = [to_local_frame(est_state)[:2].copy()]
 
     for _ in range(MAX_STEPS):
         if waypoint_idx >= len(waypoints):
             break
 
-        target = waypoints[waypoint_idx]
-        pos = est_state[:2]
-        delta = target - pos
-        distance = np.linalg.norm(delta)
-
-        # Also check the actual goal directly, using the filtered estimate,
-        # since the final grid waypoint can sit slightly off
-        # control_env.goal_pos after quantization.
-        goal_delta = est_state[:2] - np.asarray(control_env.goal_pos, dtype=np.float32)
-        if np.dot(goal_delta, goal_delta) < control_env.goal_tolerance ** 2:
-            break  # Goal reached
-
-        if not waypoint_reached and distance <= GOAL_TOLERANCE:
-            waypoint_reached = True  # latch — ignore distance from here until we move on
-
-        if not waypoint_reached:
-            action = controller.compute_action(est_state, target)
-            heading = action[1]
-        elif wait_counter < WAYPOINT_PAUSE_STEPS:
-            action = (0.0, heading)  # zero speed, hold current heading and settle
-            wait_counter += 1
+        if waypoint_idx == -1:
+            # Boot-settle phase: hold zero speed for boot_wait_steps steps
+            # before starting real waypoint-following. Deliberately never
+            # touches waypoints[] or the distance/goal checks below - only
+            # a plain step count, so it can't accidentally trip
+            # waypoint_reached or the goal check against a stale target.
+            if wait_counter < boot_wait_steps:
+                action = (0.0, heading)
+                wait_counter += 1
+            else:
+                print("Boot-settle complete - starting waypoint following.")
+                waypoint_idx = 0
+                wait_counter = 0
+                waypoint_reached = False
+                pid_distance.reset()
+                continue
         else:
-            print(f"Waypoint {waypoint_idx} reached!")
-            waypoint_idx += 1
-            wait_counter = 0
-            waypoint_reached = False
-            pid_distance.reset()
-            continue
+            target = waypoints[waypoint_idx]
+            pos = est_state[:2]
+            delta = target - pos
+            distance = np.linalg.norm(delta)
+
+            # Also check the actual goal directly, using the filtered estimate,
+            # since the final grid waypoint can sit slightly off
+            # control_env.goal_pos after quantization.
+            goal_delta = est_state[:2] - np.asarray(control_env.goal_pos, dtype=np.float32)
+            if np.dot(goal_delta, goal_delta) < control_env.goal_tolerance ** 2:
+                break  # Goal reached
+
+            if not waypoint_reached and distance <= GOAL_TOLERANCE:
+                waypoint_reached = True  # latch — ignore distance from here until we move on
+
+            if not waypoint_reached:
+                action = controller.compute_action(est_state, target)
+                heading = action[1]
+            elif wait_counter < WAYPOINT_PAUSE_STEPS:
+                action = (0.0, heading)  # zero speed, hold current heading and settle
+                wait_counter += 1
+            else:
+                print(f"Waypoint {waypoint_idx} reached!")
+                waypoint_idx += 1
+                wait_counter = 0
+                waypoint_reached = False
+                pid_distance.reset()
+                continue
 
         raw_obs, _, terminated, truncated, info = control_env.step(action)
         obs = to_map_frame(raw_obs)
@@ -248,9 +314,53 @@ def control_loop(control_env):
         if hasattr(control_env, "vis") and control_env.vis is not None:
             control_env.vis.set_belief(to_local_frame(ekf.state_est), ekf.P)
 
+        # --- Advance the open-loop dynamics-only rollout with this same
+        # action - completely independent of raw_obs/EKF, so it only ever
+        # reflects the model's own assumptions.
+        dyn_state = dynamics(dyn_state, np.array(action, dtype=np.float32))
+
+        # --- Log traces for the post-run comparison plot ---
+        if isinstance(control_env, SpheroEnv):
+            gt_trace.append(control_env.state_true[:2].copy())
+            odom_trace.append(control_env.state_odom[:2].copy())
+        else:
+            odom_trace.append(raw_obs[:2].copy())
+        dyn_trace.append(dyn_state[:2].copy())
+        ekf_trace.append(to_local_frame(est_state)[:2].copy())
+
         control_env.render()
 
     control_env.emergency_stop()
+
+    # --- Ground truth / odometry / dynamics / EKF comparison plot ---
+    # gt vs odom (sim only) shows measurement noise and process error.
+    # dyn vs odom shows pure open-loop dynamics-model drift, with no
+    # correction from any measurement at all. ekf vs the others shows how
+    # much correction the filter is actually applying. All traces are in
+    # the local frame.
+    gt_arr = np.array(gt_trace)
+    odom_arr = np.array(odom_trace)
+    dyn_arr = np.array(dyn_trace)
+    ekf_arr = np.array(ekf_trace)
+
+    plt.figure()
+    if len(gt_arr):
+        plt.plot(gt_arr[:, 0], gt_arr[:, 1], label="ground truth", color="green")
+    if len(odom_arr):
+        plt.plot(odom_arr[:, 0], odom_arr[:, 1], label="odometry (measured)", color="orange")
+    if len(dyn_arr):
+        plt.plot(dyn_arr[:, 0], dyn_arr[:, 1], label="dynamics prediction (open-loop)", color="blue")
+    if len(ekf_arr):
+        plt.plot(ekf_arr[:, 0], ekf_arr[:, 1], label="EKF estimate", color="magenta")
+    plt.legend()
+    plt.gca().set_aspect("equal")
+    plt.title("Trajectory comparison: dynamics prediction vs odometry vs EKF")
+    plt.xlabel("x (local frame)")
+    plt.ylabel("y (local frame)")
+    compare_path = os.path.join(plot_dir, "trajectory_compare.png")
+    plt.savefig(compare_path)
+    plt.close()
+    print(f"Saved trajectory comparison plot to {compare_path}")
 
 def main(argv=None):
     parser = argparse.ArgumentParser()

@@ -70,7 +70,7 @@ def make_real_env(api):
     )
 
 # ---------------------------- Environment Manager --------------------------- #
-SESSION_NAME = "session2_SB-DAE7 - EKF NOISE"  # rename this per run - it becomes the folder under logs/lab1_logs/
+SESSION_NAME = "session3_SB-DAE7 - SIM TUNING"  # rename this per run - it becomes the folder under logs/lab1_logs/
 
 @contextmanager
 def managed_env(sim: bool):
@@ -122,39 +122,59 @@ def control_loop(control_env, waypoints=WAYPOINTS, wait_steps=WAIT_STEPS):
         sim_state = control_env.state_true.copy()
         sim_traj = [tuple(sim_state[:2])]
 
-    waypoint_idx = 0
+    waypoint_idx = -1
     wait_counter = 0
     waypoint_reached = False
     heading = initial_heading
+
+    BOOT_WAIT_SECONDS = 2.0
+    boot_wait_steps = max(1, int(round(BOOT_WAIT_SECONDS / control_env.dt)))
 
     for _ in range(MAX_TOTAL_STEPS):
         if waypoint_idx >= len(waypoints):
             break
 
-        target = waypoints[waypoint_idx]
-        pos = obs[:2]
-        delta = target - pos
-        distance = np.linalg.norm(delta)
+        if waypoint_idx == -1:
+                    # Boot-settle phase: hold zero speed for boot_wait_steps steps
+                    # before starting real waypoint-following. Deliberately never
+                    # touches waypoints[] or the distance/goal checks below - only
+                    # a plain step count, so it can't accidentally trip
+                    # waypoint_reached or the goal check against a stale target.
+                    if wait_counter < boot_wait_steps:
+                        action = (0.0, heading)
+                        wait_counter += 1
+                    else:
+                        waypoint_idx = 0
+                        wait_counter = 0
+                        waypoint_reached = False
+                        pid_distance.reset()
+                        continue
 
-        if not waypoint_reached and distance <= GOAL_TOLERANCE:
-            waypoint_reached = True  # latch — ignore distance from here until we move on
-
-        if not waypoint_reached:
-            heading = np.arctan2(delta[0], delta[1], dtype=np.float32)
-            speed_cmd = np.clip(
-                pid_distance.compute(0.0, distance),
-                -MAX_SPEED, MAX_SPEED)
-            action = (speed_cmd, heading)
-        elif wait_counter < wait_steps:
-            action = (0.0, heading)
-            wait_counter += 1
         else:
-            print(f"Waypoint {waypoint_idx} reached!")
-            waypoint_idx += 1
-            wait_counter = 0
-            waypoint_reached = False
-            pid_distance.reset()
-            continue
+            target = waypoints[waypoint_idx]
+            pos = obs[:2]
+            delta = target - pos
+            distance = np.linalg.norm(delta)
+
+            if not waypoint_reached and distance <= GOAL_TOLERANCE:
+                waypoint_reached = True  # latch — ignore distance from here until we move on
+
+            if not waypoint_reached:
+                heading = np.arctan2(delta[0], delta[1], dtype=np.float32)
+                speed_cmd = np.clip(
+                    pid_distance.compute(0.0, distance),
+                    -MAX_SPEED, MAX_SPEED)
+                action = (speed_cmd, heading)
+            elif wait_counter < wait_steps:
+                action = (0.0, heading)
+                wait_counter += 1
+            else:
+                print(f"Waypoint {waypoint_idx} reached!")
+                waypoint_idx += 1
+                wait_counter = 0
+                waypoint_reached = False
+                pid_distance.reset()
+                continue
 
         obs, _, terminated, truncated, info = control_env.step(action)
 

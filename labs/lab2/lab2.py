@@ -18,7 +18,6 @@ from src.shared_functions import *
 
 # ----------------------- Global constants for lab2.py ----------------------- #
 LAB2_SEED = 0
-DT = 0.1
 
 SESSION_NAME = "session1_SB-DAE7"  # rename this per run - it becomes the folder under logs/lab2_logs/
 

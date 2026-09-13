@@ -10,10 +10,10 @@ def dynamics(state, action):
     The robot ramps toward the target speed, and turns toward the target
     heading at a limited rate, rather than snapping to either instantly.
     """
-    SPEED_TO_MPS = 35.0
-    MAX_TURN_RATE = 7.0  # rad/s — tune this for turning feel
-    MAX_ACCEL = 0.15  # max speed change per second
-    
+    SPEED_TO_MPS = 25
+    MAX_TURN_RATE = 7.0  # unaffected by this fit — left as-is
+    MAX_ACCEL = 0.024
+
     x, y, heading, speed = state
     speed_cmd, heading_cmd = action
 
@@ -34,7 +34,7 @@ def dynamics(state, action):
     return np.array([x_new, y_new, heading_new, speed_new], dtype=np.float32)
 
 
-#=================================== OLD DYNAMICS ====================================
+# #=================================== OLD DYNAMICS ====================================
 
 # # Measured/estimated physical parameters
 # REAL_TOP_SPEED_MPS = 4
@@ -49,7 +49,7 @@ def dynamics(state, action):
 #     speed_cmd, heading_cmd = action
 
 #     #Heading: unchanged
-    
+
 #     heading_error = wrap_angle(heading_cmd - heading)
 #     max_turn_delta = MAX_TURN_RATE * DT
 #     heading_new = wrap_angle(heading + np.clip(heading_error, -max_turn_delta, max_turn_delta))
