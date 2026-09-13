@@ -5,10 +5,12 @@ from sphero_env.robot.robot import Robot
 from sphero_env.envs import SpheroEnv
 
 import argparse
+import os
 import numpy as np
 
 from labs.lab3.Planner import *
 from src.pid_control import *
+from src.shared_functions import *  # wrap_angle, get_log_path
 from sphero_env.envs.custom_maze_full import build_occupancy_grid
 
 from contextlib import ExitStack, contextmanager
@@ -21,13 +23,12 @@ GOAL_TOLERANCE = 0.05
 WAYPOINT_PAUSE_STEPS = 10  # steps to pause/settle at each waypoint before moving on
 map = build_occupancy_grid()
 
+# Rename this per run - becomes the folder under logs/lab3_logs/
+SESSION_NAME = "session2_SB-DAE7_EKF"
+
 # World-frame position of the maze's designated starting plate
 # (matches START_CELL in sphero_env.envs.custom_maze_full).
 KNOWN_START_WORLD = np.array([-0.5, -0.5])
-
-### Custom dynamics function for the Sphero robot - replace this with the one you developed in Lab 1
-def wrap_angle(angle):
-    return (angle + np.pi) % (2.0 * np.pi) - np.pi
 
 DT = 0.1
 VELOCITY_LIMIT = 0.15
@@ -67,8 +68,6 @@ def dynamics(state, action):
 
     return np.array([x_new, y_new, heading_new, speed_new], dtype=np.float32)
 
-## If needed, add the EKF from lab 2 here too, and integrate below.
-
 #============================== EKF =================================
 
 class EKF:
@@ -96,9 +95,20 @@ class EKF:
 
         # Measurement noise covariance
         # self.R = np.diag([2.43124e-2,2.34517e-2])
-        self.R = 4*np.array([
-            [2.43642832e-02, -8.96859747e-04],
-            [-8.96859747e-04, 3.46949137e-02]
+        # self.R = 4*np.array([
+        #     [2.43642832e-02, -8.96859747e-04],
+        #     [-8.96859747e-04, 3.46949137e-02]
+        # ])
+        # Estimated from a 1000-sample stationary hold on the real robot
+        # (2026-09-12) - see lab1_real_2026-09-12_17-14-42.csv. This is an
+        # idle/no-motion test, so the raw values are unrealistically tiny
+        # (position barely drifts with zero commanded speed) - scaled up so
+        # the filter isn't overconfident and the belief ellipse is visible.
+        # Tune R_SCALE to taste; this is a knob, not a measured quantity.
+        R_SCALE = 1e4
+        self.R = R_SCALE * np.array([
+            [1.78378863e-11, 4.53712393e-10],
+            [4.53712393e-10, 1.21589646e-08]
         ])
 
         self.nis = None
@@ -250,7 +260,10 @@ def make_sim_env():
         occupancy_grid=map,
         grid_resolution=0.125,
         dynamics=dynamics,
-        obs_noise_std_pos=0.0,
+        # Rough match to the measured real-robot stationary noise
+        # (std_x ~= 4.2e-6, std_y ~= 1.1e-4 - env only takes one isotropic
+        # value, so this uses the larger of the two as a conservative pick).
+        obs_noise_std_pos=1.1e-4,
         process_noise_std_speed=0.00,
         process_noise_std_heading=0.0,
         obs_noise_std_vel=0.0,
@@ -275,8 +288,9 @@ def make_real_env(api):
 @contextmanager
 def managed_env(sim: bool):
     if sim:
+        sim_log_path = get_log_path(SESSION_NAME, is_real=False)
         sim_env = make_sim_env()
-        sim_env.set_log_path("logs/lab3_sim.csv")
+        sim_env.set_log_path(sim_log_path)
         sim_env.start_logging()
         try:
             yield sim_env
@@ -290,7 +304,8 @@ def managed_env(sim: bool):
 
             api = stack.enter_context(SpheroEduAPI(selected_toy))
             real_env = make_real_env(api)
-            real_env.set_log_path("logs/lab3_real.csv")
+            real_log_path = get_log_path(SESSION_NAME, is_real=True)
+            real_env.set_log_path(real_log_path)
 
             real_env.start_logging()
             try:
@@ -327,33 +342,66 @@ def control_loop(control_env):
         raw_obs[:2] = raw_obs[:2] + frame_offset
         return raw_obs
 
+    def to_local_frame(state):
+        """Inverse of to_map_frame, position-only - use this whenever handing
+        a map-frame state to something (e.g. the visualiser) that expects the
+        robot's own raw local frame instead."""
+        state = state.copy()
+        state[:2] = state[:2] - frame_offset
+        return state
+
     controller = Controller(dt=control_env.dt)
     planner = Planner(map=map, dt=control_env.dt)
 
+    # --- EKF setup ---
+    # obs at this point is already in the map frame (see above), so the EKF
+    # runs entirely in the map frame too - no extra transform needed.
+    ekf = EKF(dt=control_env.dt)
+    ekf.update(obs)  # seed the filter's position from the first measurement
+    ekf.state_est[2] = obs[2]  # seed heading/speed directly (not estimated on step 1)
+    ekf.state_est[3] = obs[3]
+    est_state = ekf.state_est.copy()
+
+    if hasattr(control_env, "vis") and control_env.vis is not None:
+        # Visualiser draws ground-truth/odometry in the robot's raw local
+        # frame, not the shifted map frame - convert before displaying so
+        # the magenta belief lines up with those traces instead of sitting
+        # offset by frame_offset.
+        control_env.vis.set_belief(to_local_frame(ekf.state_est), ekf.P)
+
     # Planner.plan returns absolute waypoints already in the map's frame.
-    waypoints = planner.plan(obs, control_env.goal_pos)
+    # Plan from the filtered estimate, same as control will use it.
+    waypoints = planner.plan(est_state, control_env.goal_pos)
 
     planner.debug_print(waypoints)
-    planner.debug_plot(obs[:2], control_env.goal_pos, waypoints)
+    # Save instead of plt.show(): avoids blocking on an interactive Tk
+    # window (which also caused stray "main thread is not in main loop"
+    # warnings on exit) and the "Not Responding" freeze seen earlier.
+    run_type = "sim" if isinstance(control_env, SpheroEnv) else "real"
+    plot_dir = os.path.join("logs", "lab3_logs", SESSION_NAME, run_type)
+    os.makedirs(plot_dir, exist_ok=True)
+    plot_path = os.path.join(plot_dir, "planned_path.png")
+    planner.debug_plot(est_state[:2], control_env.goal_pos, waypoints, save_path=plot_path)
 
     # --- Waypoint-following state (ported from lab1's control_loop) ---
     waypoint_idx = 0
     wait_counter = 0
     waypoint_reached = False  # latch: once True, ignore distance until we advance
-    heading = obs[2]
+    heading = est_state[2]
 
     for _ in range(MAX_STEPS):
         if waypoint_idx >= len(waypoints):
             break
 
         target = waypoints[waypoint_idx]
-        pos = obs[:2]
+        pos = est_state[:2]
         delta = target - pos
         distance = np.linalg.norm(delta)
 
-        # Also check the actual goal directly, since the final grid waypoint
-        # can sit slightly off control_env.goal_pos after quantization.
-        goal_delta = obs[:2] - np.asarray(control_env.goal_pos, dtype=np.float32)
+        # Also check the actual goal directly, using the filtered estimate,
+        # since the final grid waypoint can sit slightly off
+        # control_env.goal_pos after quantization.
+        goal_delta = est_state[:2] - np.asarray(control_env.goal_pos, dtype=np.float32)
         if np.dot(goal_delta, goal_delta) < control_env.goal_tolerance ** 2:
             break  # Goal reached
 
@@ -361,7 +409,7 @@ def control_loop(control_env):
             waypoint_reached = True  # latch — ignore distance from here until we move on
 
         if not waypoint_reached:
-            action = controller.compute_action(obs, target)
+            action = controller.compute_action(est_state, target)
             heading = action[1]
         elif wait_counter < WAYPOINT_PAUSE_STEPS:
             action = (0.0, heading)  # zero speed, hold current heading and settle
@@ -377,6 +425,24 @@ def control_loop(control_env):
         raw_obs, _, terminated, truncated, info = control_env.step(action)
         obs = to_map_frame(raw_obs)
 
+        # --- EKF predict/update ---
+        # Predict forward using the action just applied, then correct with
+        # the (noisy) position measurement just received. The controller
+        # and waypoint logic above always work off est_state, never the
+        # raw obs, so sensor noise near waypoints gets smoothed out instead
+        # of driving the heading command directly.
+        ekf.predict(np.array(action, dtype=np.float32))
+        ekf.update(obs)
+        est_state = ekf.state_est.copy()
+
+        # Visualise the belief (magenta mean + uncertainty ellipse), same as
+        # lab2's teleop/waypoint loops. Convert back to the robot's raw local
+        # frame first, since that's what the visualiser's other traces
+        # (ground truth, odometry) are drawn in - the real robot env has no
+        # visualiser, so this only fires for the sim env.
+        if hasattr(control_env, "vis") and control_env.vis is not None:
+            control_env.vis.set_belief(to_local_frame(ekf.state_est), ekf.P)
+
         control_env.render()
 
     control_env.emergency_stop()
@@ -386,8 +452,13 @@ def main(argv=None):
     parser.add_argument("--sim", action="store_true", help="Run simulation")
     args = parser.parse_args(argv)
 
-    with managed_env(args.sim) as control_env:
-        control_loop(control_env)
+    try:
+        with managed_env(args.sim) as control_env:
+            control_loop(control_env)
+    except KeyboardInterrupt:
+        # Catches Ctrl+C during setup/teardown too (e.g. scan_and_connect),
+        # not just inside control_loop's step loop above.
+        print("\nInterrupted - closing connection.")
 
 if __name__ == "__main__":
     main()

@@ -21,14 +21,11 @@ DT = 0.1
 RENDER_MODE = True
 
 WAYPOINTS = np.array([
-    [0.0, 0.5],
-    [0.25, 0.5],
-    [0.25, 1],
-    [1, 1]
+    [0.0, 0.0],
 ], dtype=np.float32)
 
 GOAL_TOLERANCE = 0.05
-WAIT_STEPS = 10        # steps to sit at each waypoint (DT=0.1 -> 2s)
+WAIT_STEPS = 1000        # steps to sit at each waypoint (DT=0.1 -> 2s)
 MAX_TOTAL_STEPS = 2000  # safety cap
 
 # ---------------------------------------------------------------------------- #
@@ -70,7 +67,7 @@ def make_real_env(api):
     )
 
 # ---------------------------- Environment Manager --------------------------- #
-SESSION_NAME = "session1_SB-DAE7"  # rename this per run - it becomes the folder under logs/lab1_logs/
+SESSION_NAME = "session2_SB-DAE7 - EKF NOISE"  # rename this per run - it becomes the folder under logs/lab1_logs/
 
 @contextmanager
 def managed_env(sim: bool):
