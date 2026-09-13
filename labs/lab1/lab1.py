@@ -28,10 +28,14 @@ RENDER_MODE = True
 # ], dtype=np.float32)
 
 WAYPOINTS = np.array([
-  (0, 0.3),
-  (0.3, 0.3),
-  (0.3, 0),
-  (0, 0)
+    (0.00, 0.00),   # origin
+    (0.50, 0.00),   # +x straight
+    (0.50, 0.50),   # +y straight (90° turn)
+    (0.00, 0.50),   # -x straight
+    (0.00, 0.00),   # -y straight, back to origin (closes the loop)
+    (0.35, 0.35),   # diagonal (45° heading, tests non-axis-aligned drift)
+    (0.15, 0.50),   # oblique turn (tests non-90° turn drift)
+    (0.00, 0.00),   # return to origin again
 ], dtype=np.float32)
 
 GOAL_TOLERANCE = 0.05
@@ -72,6 +76,8 @@ def make_real_env(api):
         world_height=5.0,
         goal_pos=tuple(WAYPOINTS[0]),
         goal_tolerance=GOAL_TOLERANCE,
+        obs_noise_std_pos=0.0,
+        obs_noise_std_vel=0.0,
         render_mode="human",
         window_size=(800, 800),
     )

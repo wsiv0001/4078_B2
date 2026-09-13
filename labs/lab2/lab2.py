@@ -24,10 +24,14 @@ SESSION_NAME = "session1_SB-DAE7"  # rename this per run - it becomes the folder
 # Waypoints for --mode waypoints. Reuses the goal used by teleop's env (0.5, 0.5),
 # but you can add more points here if you want a multi-leg PID run.
 WAYPOINTS = np.array([
-    [0.0, 0.5],
-    [0.5, 0.5],
-    [0.5, 0.0],
-    [0.0, 0.0]
+    (0.00, 0.00),   # origin
+    (0.50, 0.00),   # +x straight
+    (0.50, 0.50),   # +y straight (90° turn)
+    (0.00, 0.50),   # -x straight
+    (0.00, 0.00),   # -y straight, back to origin (closes the loop)
+    (0.35, 0.35),   # diagonal (45° heading, tests non-axis-aligned drift)
+    (0.15, 0.50),   # oblique turn (tests non-90° turn drift)
+    (0.00, 0.00),   # return to origin again
 ], dtype=np.float32)
 
 GOAL_TOLERANCE = 0.1
@@ -66,7 +70,7 @@ def teleop_control_loop(env, ekf, robot_env=None, action=None, moving=False):
     env.render()
 
 
-def print_assessment_metrics(position_errors, position_covariances):
+def print_assessment_metrics(position_errors, position_covariances, nis_history=None):
     """
     Lab 2 assessment metrics.
 
@@ -139,6 +143,22 @@ def print_assessment_metrics(position_errors, position_covariances):
     print(f"95% chi-square gate (2 DoF):    {chi_square_95:.3f}")
     print()
     print(f"Mean squared Mahalanobis:       {np.mean(mahalanobis_squared):.3f}")
+    print("=" * 55 + "\n")
+
+    print(f"Mean squared Mahalanobis:       {np.mean(mahalanobis_squared):.3f}")
+
+    if nis_history:
+        nis_arr = np.asarray(nis_history)
+        mean_nis = np.mean(nis_arr)
+        # For a 2D position measurement, a well-tuned EKF has mean NIS ~ 2
+        # (the chi-square(2) expectation), with ~95% of individual values
+        # falling inside [0.0506, 7.378] (two-sided 95% chi-square(2) bounds).
+        lower, upper = 0.0506, 7.378
+        within_bounds = np.mean((nis_arr >= lower) & (nis_arr <= upper))
+        print()
+        print(f"Mean NIS:                        {mean_nis:.3f}  (target ≈ 2.0)")
+        print(f"NIS within 95% bounds:           {within_bounds:.1%}  (target ≈ 95%)")
+
     print("=" * 55 + "\n")
 
 
@@ -254,9 +274,8 @@ def waypoint_control_loop(env, ekf, robot_env=None, waypoints=WAYPOINTS,
         robot_env.emergency_stop()
 
     print("Waypoint run complete.")
-    print_assessment_metrics(position_errors, position_covariances)
+    print_assessment_metrics(position_errors, position_covariances, nis_history)
     plot_nis(nis_history)
-
 
 # This function creates a new simulator environment
 def make_sim_env():
@@ -270,9 +289,9 @@ def make_sim_env():
         goal_tolerance=0.1,
         occupancy_grid=None,
         dynamics=dynamics,
-        obs_noise_std_pos=0.05,
-        process_noise_std_speed=0.005,
-        process_noise_std_heading=0.01,
+        obs_noise_std_pos=1.14e-4,
+        process_noise_std_speed=0.0,
+        process_noise_std_heading=0.0,
         obs_noise_std_vel=0.025,
         render_mode="human",
         window_size=(800, 800),
@@ -281,13 +300,15 @@ def make_sim_env():
 def make_real_env(api):
     return Robot(
         api=api,
-        dt=0.1,
+        dt=DT,
         max_steps=5000,
-        vel_limit=0.15,
+        vel_limit=VELOCITY_LIMIT,
         world_width=5.0,
         world_height=5.0,
         goal_pos=(0.5, 0.5),
-        goal_tolerance=0.1,
+        goal_tolerance=GOAL_TOLERANCE,
+        obs_noise_std_pos=0.0,
+        obs_noise_std_vel=0.0,
         render_mode="human",
         window_size=(800, 800),
     )

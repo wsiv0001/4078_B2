@@ -27,7 +27,7 @@ WAYPOINT_PAUSE_STEPS = 10  # steps to pause/settle at each waypoint before movin
 map = build_occupancy_grid()
 
 # Rename this per run - becomes the folder under logs/lab3_logs/
-SESSION_NAME = "session2_SB-DAE7_EKF"
+SESSION_NAME = "session4_SB-DAE7_EKF - with noise"
 
 # World-frame position of the maze's designated starting plate
 # (matches START_CELL in sphero_env.envs.custom_maze_full).
@@ -66,9 +66,6 @@ def make_sim_env():
         occupancy_grid=map,
         grid_resolution=0.125,
         dynamics=dynamics,
-        # Rough match to the measured real-robot stationary noise
-        # (std_x ~= 4.2e-6, std_y ~= 1.1e-4 - env only takes one isotropic
-        # value, so this uses the larger of the two as a conservative pick).
         obs_noise_std_pos=1.1e-4,
         process_noise_std_speed=0.00,
         process_noise_std_heading=0.0,
@@ -87,7 +84,7 @@ def make_real_env(api):
         world_height=5.0,
         goal_pos=(0.5, 0.5),
         goal_tolerance=GOAL_TOLERANCE,
-        obs_noise_std_pos=1.1e-4,
+        obs_noise_std_pos=0.0,
         obs_noise_std_vel=0.0,
         render_mode="human",
         window_size=(800, 800),

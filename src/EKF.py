@@ -51,23 +51,20 @@ class EKF:
             0.00243,   # x variance (m^2)
             0.00235,   # y variance (m^2)
             0.0025,    # heading variance (rad)^2
-            0.0025     # speed variance (m/s)^2 (pretty sure on the unit)
+            0.0025     # speed variance (m/s)^2
         ])
 
         # Process noise covariance
-        self.Q = 1.5*np.diag([
-            1e-3,   # x model noise
-            1e-3,   # y model noise
-            1e-2,   # heading model noise
-            2.5e-5  # speed model noise
+        self.Q = np.diag([
+            2e-3,   # x model noise
+            2e-3,   # y model noise
+            2e-2,   # heading model noise
+            5e-5  # speed model noise
         ])
 
         # Measurement noise covariance
-        # self.R = np.diag([2.43124e-2,2.34517e-2])
-        self.R = 1.5*np.array([
-            [2.43642832e-02, -8.96859747e-04],
-            [-8.96859747e-04, 3.46949137e-02]
-        ])
+        self.R = np.diag([2.43124e-2,2.34517e-2])
+
 
         self.nis = None
         self._initialised = False
