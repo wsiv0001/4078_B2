@@ -5,10 +5,12 @@ from sphero_env.robot.robot import Robot
 from sphero_env.envs import SpheroEnv
 
 import argparse
+import os
 import numpy as np
 
 from labs.lab3.Planner import *
 from src.pid_control import *
+from src.shared_functions import *  # wrap_angle, get_log_path
 from sphero_env.envs.custom_maze_full import build_occupancy_grid
 
 from contextlib import ExitStack, contextmanager
@@ -21,13 +23,12 @@ GOAL_TOLERANCE = 0.05
 WAYPOINT_PAUSE_STEPS = 10  # steps to pause/settle at each waypoint before moving on
 map = build_occupancy_grid()
 
+# Rename this per run - becomes the folder under logs/lab3_logs/
+SESSION_NAME = "session1_SB-DAE7"
+
 # World-frame position of the maze's designated starting plate
 # (matches START_CELL in sphero_env.envs.custom_maze_full).
 KNOWN_START_WORLD = np.array([-0.5, -0.5])
-
-### Custom dynamics function for the Sphero robot - replace this with the one you developed in Lab 1
-def wrap_angle(angle):
-    return (angle + np.pi) % (2.0 * np.pi) - np.pi
 
 DT = 0.1
 VELOCITY_LIMIT = 0.15
@@ -127,8 +128,9 @@ def make_real_env(api):
 @contextmanager
 def managed_env(sim: bool):
     if sim:
+        sim_log_path = get_log_path(SESSION_NAME, is_real=False)
         sim_env = make_sim_env()
-        sim_env.set_log_path("logs/lab3_sim.csv")
+        sim_env.set_log_path(sim_log_path)
         sim_env.start_logging()
         try:
             yield sim_env
@@ -142,7 +144,8 @@ def managed_env(sim: bool):
 
             api = stack.enter_context(SpheroEduAPI(selected_toy))
             real_env = make_real_env(api)
-            real_env.set_log_path("logs/lab3_real.csv")
+            real_log_path = get_log_path(SESSION_NAME, is_real=True)
+            real_env.set_log_path(real_log_path)
 
             real_env.start_logging()
             try:
@@ -186,7 +189,14 @@ def control_loop(control_env):
     waypoints = planner.plan(obs, control_env.goal_pos)
 
     planner.debug_print(waypoints)
-    planner.debug_plot(obs[:2], control_env.goal_pos, waypoints)
+    # Save instead of plt.show(): avoids blocking on an interactive Tk
+    # window (which can also cause stray "main thread is not in main loop"
+    # warnings on exit) and the "Not Responding" freeze this caused earlier.
+    run_type = "sim" if isinstance(control_env, SpheroEnv) else "real"
+    plot_dir = os.path.join("logs", "lab3_logs", SESSION_NAME, run_type)
+    os.makedirs(plot_dir, exist_ok=True)
+    plot_path = os.path.join(plot_dir, "planned_path.png")
+    planner.debug_plot(obs[:2], control_env.goal_pos, waypoints, save_path=plot_path)
 
     # --- Waypoint-following state (ported from lab1's control_loop) ---
     waypoint_idx = 0
