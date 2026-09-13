@@ -4,7 +4,7 @@ import numpy as np
 import pygame
 import matplotlib.pyplot as plt
 from contextlib import ExitStack, contextmanager
-from labs.lab2.EKF import *
+from src.EKF import *
 
 from sphero_unsw.sphero_edu import SpheroEduAPI
 from sphero_env.robot.connect import scan_and_connect

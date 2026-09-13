@@ -37,45 +37,7 @@ inputs produce identical outputs.
 """
 
 import numpy as np
-
-def wrap_angle(angle):
-    return (angle + np.pi) % (2.0 * np.pi) - np.pi
-
-DT = 0.1
-VELOCITY_LIMIT = 0.15
-
-# Measured/estimated physical parameters
-REAL_TOP_SPEED_MPS = 4
-COMMANDED_MAX_SPEED = VELOCITY_LIMIT
-SIM_SPEED_SCALE = REAL_TOP_SPEED_MPS / COMMANDED_MAX_SPEED
-
-MAX_TURN_RATE = 100
-MAX_ACCEL = 0.2
-
-def dynamics(state, action):
-    x, y, heading, speed = state
-    speed_cmd, heading_cmd = action
-
-    #Heading: unchanged
-    
-    heading_error = wrap_angle(heading_cmd - heading)
-    max_turn_delta = MAX_TURN_RATE * DT
-    heading_new = wrap_angle(heading + np.clip(heading_error, -max_turn_delta, max_turn_delta))
-    # heading_new = wrap_angle(heading+heading_error)
-
-    # Speed: ramp toward target speed, still in "commanded" units
-    max_speed_delta = MAX_ACCEL * DT
-    speed_error = speed_cmd - speed
-    speed_new = speed + np.clip(speed_error, -max_speed_delta, max_speed_delta)
-    # speed_new = speed + speed_error
-    speed_new = np.clip(speed_new, 0.0, COMMANDED_MAX_SPEED)
-
-    # Position: this is the only place the real-world scale enters
-    x_new = x + speed_new * SIM_SPEED_SCALE * np.sin(heading_new) * DT
-    y_new = y + speed_new * SIM_SPEED_SCALE * np.cos(heading_new) * DT
-
-    return np.array([x_new, y_new, heading_new, speed_new], dtype=np.float32)
-
+from src.dynamics import *
 
 class EKF:
     def __init__(self, dt=DT):
@@ -93,7 +55,7 @@ class EKF:
         ])
 
         # Process noise covariance
-        self.Q = 4*np.diag([
+        self.Q = 2*np.diag([
             1e-3,   # x model noise
             1e-3,   # y model noise
             1e-2,   # heading model noise
@@ -102,7 +64,7 @@ class EKF:
 
         # Measurement noise covariance
         # self.R = np.diag([2.43124e-2,2.34517e-2])
-        self.R = 4*np.array([
+        self.R = 2*np.array([
             [2.43642832e-02, -8.96859747e-04],
             [-8.96859747e-04, 3.46949137e-02]
         ])
