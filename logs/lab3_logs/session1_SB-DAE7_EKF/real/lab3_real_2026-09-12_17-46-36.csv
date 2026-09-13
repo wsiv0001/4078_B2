@@ -1,0 +1,2 @@
+est_x,est_y,odom_x,odom_y,gt_x,gt_y,cov_x,cov_y,cov_xy,cov_yx,heading_cmd,speed_cmd,heading,speed,setpoint_x,setpoint_y
+nan,nan,8.250213431892917e-05,-0.0010330018121749163,8.250213431892917e-05,-0.0010330018121749163,nan,nan,nan,nan,0.0,0.029999999329447746,0.0,0.029999999329447746,0.5,0.5

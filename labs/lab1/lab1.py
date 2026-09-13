@@ -20,15 +20,26 @@ LAB1_SEED = 0
 DT = 0.1
 RENDER_MODE = True
 
+# WAYPOINTS = np.array([
+#   (0, 0.5),
+#   (0.25, 0.5),
+#   (0.25, 1),
+#   (1, 1)
+# ], dtype=np.float32)
+
 WAYPOINTS = np.array([
-    [0.0, 0.5],
-    [0.25, 0.5],
-    [0.25, 1],
-    [1, 1]
+    (0.00, 0.00),   # origin
+    (0.50, 0.00),   # +x straight
+    (0.50, 0.50),   # +y straight (90° turn)
+    (0.00, 0.50),   # -x straight
+    (0.00, 0.00),   # -y straight, back to origin (closes the loop)
+    (0.35, 0.35),   # diagonal (45° heading, tests non-axis-aligned drift)
+    (0.15, 0.50),   # oblique turn (tests non-90° turn drift)
+    (0.00, 0.00),   # return to origin again
 ], dtype=np.float32)
 
 GOAL_TOLERANCE = 0.05
-WAIT_STEPS = 10        # steps to sit at each waypoint (DT=0.1 -> 2s)
+WAIT_STEPS = 20        # steps to sit at each waypoint (DT=0.1 -> 2s)
 MAX_TOTAL_STEPS = 2000  # safety cap
 
 # ---------------------------------------------------------------------------- #
@@ -65,12 +76,14 @@ def make_real_env(api):
         world_height=5.0,
         goal_pos=tuple(WAYPOINTS[0]),
         goal_tolerance=GOAL_TOLERANCE,
+        obs_noise_std_pos=0.0,
+        obs_noise_std_vel=0.0,
         render_mode="human",
         window_size=(800, 800),
     )
 
 # ---------------------------- Environment Manager --------------------------- #
-SESSION_NAME = "session1_SB-DAE7"  # rename this per run - it becomes the folder under logs/lab1_logs/
+SESSION_NAME = "session3_SB-DAE7 - SIM TUNING"  # rename this per run - it becomes the folder under logs/lab1_logs/
 
 @contextmanager
 def managed_env(sim: bool):
@@ -112,41 +125,77 @@ def control_loop(control_env, waypoints=WAYPOINTS, wait_steps=WAIT_STEPS):
         options={"initial_heading": initial_heading}
     )
 
-    waypoint_idx = 0
+    # When driving the real robot, also run the pure dynamics model in parallel
+    # with the same actions, starting from the robot's settled post-reset pose,
+    # and push its predicted path to the visualiser as a blue overlay line
+    # (visualiser.py draws the "odom" overlay slot in blue). This is skipped in
+    # sim mode, since the sim env's own trace already IS that model's response.
+    show_sim_overlay = isinstance(control_env, Robot)
+    if show_sim_overlay:
+        sim_state = control_env.state_true.copy()
+        sim_traj = [tuple(sim_state[:2])]
+
+    waypoint_idx = -1
     wait_counter = 0
     waypoint_reached = False
     heading = initial_heading
+
+    BOOT_WAIT_SECONDS = 2.0
+    boot_wait_steps = max(1, int(round(BOOT_WAIT_SECONDS / control_env.dt)))
 
     for _ in range(MAX_TOTAL_STEPS):
         if waypoint_idx >= len(waypoints):
             break
 
-        target = waypoints[waypoint_idx]
-        pos = obs[:2]
-        delta = target - pos
-        distance = np.linalg.norm(delta)
+        if waypoint_idx == -1:
+                    # Boot-settle phase: hold zero speed for boot_wait_steps steps
+                    # before starting real waypoint-following. Deliberately never
+                    # touches waypoints[] or the distance/goal checks below - only
+                    # a plain step count, so it can't accidentally trip
+                    # waypoint_reached or the goal check against a stale target.
+                    if wait_counter < boot_wait_steps:
+                        action = (0.0, heading)
+                        wait_counter += 1
+                    else:
+                        waypoint_idx = 0
+                        wait_counter = 0
+                        waypoint_reached = False
+                        pid_distance.reset()
+                        continue
 
-        if not waypoint_reached and distance <= GOAL_TOLERANCE:
-            waypoint_reached = True  # latch — ignore distance from here until we move on
-
-        if not waypoint_reached:
-            heading = np.arctan2(delta[0], delta[1], dtype=np.float32)
-            speed_cmd = np.clip(
-                pid_distance.compute(0.0, distance),
-                -MAX_SPEED, MAX_SPEED)
-            action = (speed_cmd, heading)
-        elif wait_counter < wait_steps:
-            action = (0.0, heading)
-            wait_counter += 1
         else:
-            print(f"Waypoint {waypoint_idx} reached!")
-            waypoint_idx += 1
-            wait_counter = 0
-            waypoint_reached = False
-            pid_distance.reset()
-            continue
+            target = waypoints[waypoint_idx]
+            pos = obs[:2]
+            delta = target - pos
+            distance = np.linalg.norm(delta)
+
+            if not waypoint_reached and distance <= GOAL_TOLERANCE:
+                waypoint_reached = True  # latch — ignore distance from here until we move on
+
+            if not waypoint_reached:
+                heading = np.arctan2(delta[0], delta[1], dtype=np.float32)
+                speed_cmd = np.clip(
+                    pid_distance.compute(0.0, distance),
+                    -MAX_SPEED, MAX_SPEED)
+                action = (speed_cmd, heading)
+            elif wait_counter < wait_steps:
+                action = (0.0, heading)
+                wait_counter += 1
+            else:
+                print(f"Waypoint {waypoint_idx} reached!")
+                waypoint_idx += 1
+                wait_counter = 0
+                waypoint_reached = False
+                pid_distance.reset()
+                continue
 
         obs, _, terminated, truncated, info = control_env.step(action)
+
+        if show_sim_overlay:
+            sim_state = dynamics(sim_state, np.array(action, dtype=np.float32))
+            sim_traj.append(tuple(sim_state[:2]))
+            control_env.vis.set_overlay_trajectories(odom=np.array(sim_traj, dtype=np.float32))
+
         if RENDER_MODE:
             control_env.render()
 

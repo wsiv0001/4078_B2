@@ -2,8 +2,9 @@ import time
 import argparse
 import numpy as np
 import pygame
+import matplotlib.pyplot as plt
 from contextlib import ExitStack, contextmanager
-from labs.lab2.EKF import *
+from src.EKF import *
 
 from sphero_unsw.sphero_edu import SpheroEduAPI
 from sphero_env.robot.connect import scan_and_connect
@@ -11,13 +12,12 @@ from sphero_env.robot.robot import Robot
 from sphero_env.envs import SpheroEnv
 
 # group_b2 imports - same as lab1, needed for get_log_path, pid_distance, MAX_SPEED
-from src.dynamics import *
+#from src.dynamics import *
 from src.pid_control import *
 from src.shared_functions import *
 
 # ----------------------- Global constants for lab2.py ----------------------- #
 LAB2_SEED = 0
-DT = 0.1
 
 SESSION_NAME = "session1_SB-DAE7"  # rename this per run - it becomes the folder under logs/lab2_logs/
 
@@ -66,6 +66,102 @@ def teleop_control_loop(env, ekf, robot_env=None, action=None, moving=False):
     env.render()
 
 
+def print_assessment_metrics(position_errors, position_covariances):
+    """
+    Lab 2 assessment metrics.
+
+    The automarker compares the EKF position estimate against simulator
+    ground truth using the posterior position covariance:
+
+        d = sqrt(e.T @ inv(P) @ e)
+
+    where e = [sim_x - real_x, sim_y - real_y].
+
+    For the 2-DoF 95% chi-square gate:
+        d^2 <= 5.991
+    """
+    if not position_errors:
+        return
+
+    errors = np.asarray(position_errors)
+    covariances = np.asarray(position_covariances)
+
+    mahalanobis_distances = []
+    mahalanobis_squared = []
+
+    for error, P_pos in zip(errors, covariances):
+        # Numerical protection: covariance should be symmetric.
+        P_pos = 0.5 * (P_pos + P_pos.T)
+
+        try:
+            d_squared = float(error.T @ np.linalg.solve(P_pos, error))
+        except np.linalg.LinAlgError:
+            # Fall back to pseudoinverse if P is singular.
+            d_squared = float(error.T @ np.linalg.pinv(P_pos) @ error)
+
+        # Small negative values can occur from floating-point roundoff.
+        d_squared = max(d_squared, 0.0)
+
+        mahalanobis_squared.append(d_squared)
+        mahalanobis_distances.append(np.sqrt(d_squared))
+
+    mahalanobis_distances = np.asarray(mahalanobis_distances)
+    mahalanobis_squared = np.asarray(mahalanobis_squared)
+
+    mean_mahalanobis = np.mean(mahalanobis_distances)
+
+    # 95% chi-square upper bound for 2 degrees of freedom.
+    chi_square_95 = 5.991
+    pass_mask = mahalanobis_squared <= chi_square_95
+    pass_count = int(np.sum(pass_mask))
+    total_count = len(pass_mask)
+    pass_rate = pass_count / total_count
+
+    print("\n" + "=" * 55)
+    print("LAB 2 EKF ASSESSMENT METRICS")
+    print("=" * 55)
+    print(f"Samples evaluated:              {total_count}")
+    if total_count != 200:
+        print("WARNING: Assessment requires 200 motion steps.")
+    print()
+    print(
+        f"Mean Mahalanobis distance:      {mean_mahalanobis:.3f} "
+        f"[{'PASS' if mean_mahalanobis <= 4.0 else 'FAIL'}]"
+    )
+    print("Required:                       <= 4.0")
+    print()
+    print(
+        f"Chi-square 95% pass rate:       {pass_rate:.1%} "
+        f"({pass_count}/{total_count}) "
+        f"[{'PASS' if pass_rate >= 0.90 else 'FAIL'}]"
+    )
+    print("Required:                       >= 90.0%")
+    print(f"95% chi-square gate (2 DoF):    {chi_square_95:.3f}")
+    print()
+    print(f"Mean squared Mahalanobis:       {np.mean(mahalanobis_squared):.3f}")
+    print("=" * 55 + "\n")
+
+
+def plot_nis(nis_history):
+    if not nis_history:
+        return
+
+    plt.figure(figsize=(10, 5))
+    plt.scatter(np.arange(1, len(nis_history) + 1), nis_history, label="NIS")
+
+    # Chi-squared thresholds for 2D measurement [x, y]
+    plt.axhline(0.0506, linestyle="--", label="95% threshold", color="red")
+    plt.axhline(7.378, linestyle="--", label="99% threshold", color="orange")
+
+    plt.xlabel("Step")
+    plt.ylabel("NIS")
+    plt.title("EKF Normalised Innovation Squared")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
+
 def waypoint_control_loop(env, ekf, robot_env=None, waypoints=WAYPOINTS,
                            wait_steps=WAIT_STEPS, goal_tolerance=GOAL_TOLERANCE,
                            max_total_steps=MAX_TOTAL_STEPS):
@@ -75,7 +171,9 @@ def waypoint_control_loop(env, ekf, robot_env=None, waypoints=WAYPOINTS,
     loop does. Drives the real robot alongside the sim if robot_env is connected.
 
     Press SPACE (or close the pygame window) to abort early - useful since this can
-    drive the real robot unattended.
+    drive the real robot unattended. Assessment metrics (NIS / Mahalanobis pass-fail)
+    are printed and plotted at the end regardless of whether the run completes or is
+    aborted early.
     """
     initial_heading = np.arctan2(waypoints[0][0], waypoints[0][1], dtype=np.float32)
 
@@ -88,6 +186,10 @@ def waypoint_control_loop(env, ekf, robot_env=None, waypoints=WAYPOINTS,
     waypoint_reached = False
     heading = initial_heading
 
+    nis_history = []
+    position_errors = []
+    position_covariances = []
+
     for _ in range(max_total_steps):
         # Allow aborting mid-run (esp. important when driving the real robot).
         for event in pygame.event.get():
@@ -97,6 +199,8 @@ def waypoint_control_loop(env, ekf, robot_env=None, waypoints=WAYPOINTS,
                 print("Waypoint run aborted.")
                 if robot_env is not None:
                     robot_env.emergency_stop()
+                print_assessment_metrics(position_errors, position_covariances)
+                plot_nis(nis_history)
                 return
 
         if waypoint_idx >= len(waypoints):
@@ -135,12 +239,23 @@ def waypoint_control_loop(env, ekf, robot_env=None, waypoints=WAYPOINTS,
         ekf.predict(action)
         ekf.update(robot_obs if robot_env is not None else sim_obs)
 
+        # Record NIS and the ground-truth-vs-estimate error/covariance for
+        # the end-of-run assessment metrics (same convention as lab1: the
+        # sim's ground truth is the reference, even when driving the real
+        # robot alongside it).
+        nis_history.append(ekf.nis)
+        position_errors.append(sim_obs[:2] - ekf.state_est[:2])
+        position_covariances.append(ekf.P[:2, :2].copy())
+
         env.vis.set_belief(ekf.state_est, ekf.P)
         env.render()
 
     if robot_env is not None:
         robot_env.emergency_stop()
 
+    print("Waypoint run complete.")
+    print_assessment_metrics(position_errors, position_covariances)
+    plot_nis(nis_history)
 
 # This function creates a new simulator environment
 def make_sim_env():
@@ -154,9 +269,9 @@ def make_sim_env():
         goal_tolerance=0.1,
         occupancy_grid=None,
         dynamics=dynamics,
-        obs_noise_std_pos=0.05,
-        process_noise_std_speed=0.005,
-        process_noise_std_heading=0.01,
+        obs_noise_std_pos=1.14e-4,
+        process_noise_std_speed=0.0,
+        process_noise_std_heading=0.0,
         obs_noise_std_vel=0.025,
         render_mode="human",
         window_size=(800, 800),
@@ -165,13 +280,15 @@ def make_sim_env():
 def make_real_env(api):
     return Robot(
         api=api,
-        dt=0.1,
+        dt=DT,
         max_steps=5000,
-        vel_limit=0.15,
+        vel_limit=VELOCITY_LIMIT,
         world_width=5.0,
         world_height=5.0,
         goal_pos=(0.5, 0.5),
-        goal_tolerance=0.1,
+        goal_tolerance=GOAL_TOLERANCE,
+        obs_noise_std_pos=0.0,
+        obs_noise_std_vel=0.0,
         render_mode="human",
         window_size=(800, 800),
     )
@@ -236,7 +353,6 @@ def main(sim_only=False, mode="teleop"):
             print(f"\nWaypoint run ready ({mode_label}). Driving through {len(WAYPOINTS)} waypoint(s).")
             print("  SPACE / Q = abort\n")
             waypoint_control_loop(env, ekf=ekf, robot_env=robot_env)
-            print("Waypoint run complete.")
             return
 
         print(f"\nTele-op ready ({mode_label}):")
