@@ -47,8 +47,8 @@ class Planner:
         row, col = cell
         candidates = [(row - 1, col), (row + 1, col), (row, col - 1), (row, col + 1)]
         for r, c in candidates:
-            if 0 <= r < self.h and 0 <= c < self.w and self.map[r, c] == 0:
-                yield (r, c)
+            if 0 <= r < self.h and 0 <= c < self.w and self.map[r, c] == 0: #if the cell is within the bounds of the map and is a 0 meaning no wall
+                yield (r, c) #return the neighbouring point
 
     def corners_only(self, path):
         """Keep only the cells where the path changes direction (plus the
@@ -60,19 +60,19 @@ class Planner:
         corners = [path[0]]
         prev_direction = None
 
-        for i in range(1, len(path)):
-            r0, c0 = path[i - 1]
-            r1, c1 = path[i]
-            direction = (r1 - r0, c1 - c0)
+        for i in range(1, len(path)): #iterate through points in path 
+            r0, c0 = path[i - 1] #get previous x and y 
+            r1, c1 = path[i] #get current x and y
+            direction = (r1 - r0, c1 - c0) # subtract the two to see if the direction is same
 
-            if prev_direction is None:
+            if prev_direction is None: #if we are at first waypoint -> no previous
                 prev_direction = direction
-            elif direction != prev_direction:
-                corners.append(path[i - 1])
-                prev_direction = direction
+            elif direction != prev_direction: #only append the point to the path if the previous direction is not the same so we only get corners
+                corners.append(path[i - 1]) 
+                prev_direction = direction #update previous direction for next loop
 
         corners.append(path[-1])
-        return corners
+        return corners  #return the new path with only waypoints at the corners
 
     def plan(self, state, goal):
         """
@@ -84,33 +84,35 @@ class Planner:
         Returns:
             waypoints : list of absolute world-frame [x, y] positions
                         leading from the current position to the goal.
+
+                        
         """
         start = self.world_to_grid(state[:2])
         end = self.world_to_grid(goal)
 
-        # Standard A* bookkeeping
-        open_set = [(0, start)]
-        came_from = {}
-        cost_so_far = {start: 0}
+        # Standard A*
+        open_set = [(0, start)] #priority queue 
+        came_from = {} #dctionary to reconstruct path, stores tile and the previous tile taken to get there
+        cost_so_far = {start: 0} #the cumulative g cost of each point
 
         def heuristic(a, b):
-            return abs(a[0] - b[0]) + abs(a[1] - b[1])
+            return abs(a[0] - b[0]) + abs(a[1] - b[1]) #determine the cost from the cell to the end
 
         found = False
         while open_set:
-            _, current = heapq.heappop(open_set)
+            _, current = heapq.heappop(open_set) #current is the cell we are currently exploring which has the lowest f cost
 
             if current == end:
                 found = True
                 break
 
             for next_cell in self.neighbours(current):
-                new_cost = cost_so_far[current] + 1
-                if next_cell not in cost_so_far or new_cost < cost_so_far[next_cell]:
-                    cost_so_far[next_cell] = new_cost
-                    priority = new_cost + heuristic(next_cell, end)
-                    heapq.heappush(open_set, (priority, next_cell))
-                    came_from[next_cell] = current
+                new_cost = cost_so_far[current] + 1 #calculate g cost
+                if next_cell not in cost_so_far or new_cost < cost_so_far[next_cell]: #if the cell has not been discovered or theres a cheaper cost than whats currently stored 
+                    cost_so_far[next_cell] = new_cost #update the gcost for our new cell
+                    priority = new_cost + heuristic(next_cell, end) #calculate the f cost, f = h + g
+                    heapq.heappush(open_set, (priority, next_cell)) #add the new cell to the priority queue
+                    came_from[next_cell] = current #add new key (next_cell) value (current cell) pair 
 
         if not found:
             # No path found - just head straight for the goal

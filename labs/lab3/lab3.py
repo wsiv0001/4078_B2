@@ -22,8 +22,8 @@ from contextlib import ExitStack, contextmanager
 
 LAB1_SEED = 0
 MAX_STEPS = 5000
-GOAL_TOLERANCE = 0.03
-WAYPOINT_PAUSE_STEPS = 10  # steps to pause/settle at each waypoint before moving on
+GOAL_TOLERANCE = 0.025
+WAYPOINT_PAUSE_STEPS = 4  # steps to pause/settle at each waypoint before moving on
 map = build_occupancy_grid()
 
 # Rename this per run - becomes the folder under logs/lab3_logs/
