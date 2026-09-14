@@ -1,8 +1,8 @@
 # Import necessary libraries
-from sphero_env.robot.connect import scan_and_connect
+from src.sphero_env.robot.connect import scan_and_connect
 from sphero_unsw.sphero_edu import SpheroEduAPI
-from sphero_env.robot.robot import Robot
-from sphero_env.envs import SpheroEnv
+from src.sphero_env.robot.robot import Robot
+from src.sphero_env.envs import SpheroEnv
 
 import argparse
 import os
@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 from labs.lab3.Planner import *
 from src.pid_control import *
 from src.shared_functions import *  # wrap_angle, get_log_path
-from sphero_env.envs.custom_maze_full import build_occupancy_grid
+from src.sphero_env.envs.custom_maze_full import build_occupancy_grid
 from src.dynamics import *
 from src.EKF import *
 
@@ -276,7 +276,7 @@ def control_loop(control_env):
                 break  # Goal reached
 
             if not waypoint_reached and distance <= GOAL_TOLERANCE:
-                waypoint_reached = True  # latch — ignore distance from here until we move on
+                waypoint_reached = True  # ignore distance from here until we move on
 
             if not waypoint_reached:
                 action = controller.compute_action(est_state, target)
@@ -294,6 +294,31 @@ def control_loop(control_env):
 
         raw_obs, _, terminated, truncated, info = control_env.step(action)
         obs = to_map_frame(raw_obs)
+
+        if raw_obs[4]:
+            print("Collision detected")
+
+            # Drive to the last waypoint
+            waypoint_idx -= 1
+
+            # Find the corner it is stuck on, based on the last 2 waypoints and next waypoint
+            previous_waypoint = waypoints[waypoint_idx-1]
+            current_waypoint = waypoints[waypoint_idx]
+            next_waypoint = waypoints[waypoint_idx+1]
+            corner_x = previous_waypoint[0] + next_waypoint[0] - current_waypoint[0]
+            corner_y = previous_waypoint[1] + next_waypoint[1] - current_waypoint[1]
+
+            if corner_x < 0:
+                ekf.state_est[0] -= 0.05
+            else:
+                ekf.state_est[0] += 0.05
+
+            if corner_y < 0:
+                ekf.state_est[1] -= 0.05
+            else:
+                ekf.state_est[1] += 0.05
+
+            est_state = ekf.state_est.copy()
 
         # --- EKF predict/update ---
         # Predict forward using the action just applied, then correct with
@@ -331,7 +356,7 @@ def control_loop(control_env):
 
     control_env.emergency_stop()
 
-    # --- Ground truth / odometry / dynamics / EKF comparison plot ---
+    # =============== COMPARISON PLOT ====================
     # gt vs odom (sim only) shows measurement noise and process error.
     # dyn vs odom shows pure open-loop dynamics-model drift, with no
     # correction from any measurement at all. ekf vs the others shows how

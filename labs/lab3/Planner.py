@@ -20,8 +20,8 @@ class Planner:
         """
         self.map = map
         self.dt = dt
-        self.resolution = resolution
-        self.h, self.w = map.shape
+        self.resolution = resolution    #Added to be accessible in when translating sim to real from of reference
+        self.h, self.w = map.shape      #Also required to obtain 
 
     def world_to_grid(self, pos):
         """Convert a world (x, y) position to a (row, col) grid cell.
@@ -43,11 +43,14 @@ class Planner:
         return np.array([x, y], dtype=np.float32)
 
     def neighbours(self, cell):
-        """Return walkable 4-connected neighbours of a cell."""
+        """
+        Return walkable 4-connected neighbours of a cell.
+        Because there are no diagonals we only check the 4 squares neighbouring the current tile
+        """
         row, col = cell
         candidates = [(row - 1, col), (row + 1, col), (row, col - 1), (row, col + 1)]
         for r, c in candidates:
-            if 0 <= r < self.h and 0 <= c < self.w and self.map[r, c] == 0:
+            if 0 <= r < self.h and 0 <= c < self.w and self.map[r, c] == 0: #if it is within the map index and = 0 the tile is valid, it is then ran through the loop until the next tile is requested
                 yield (r, c)
 
     def corners_only(self, path):
@@ -63,7 +66,7 @@ class Planner:
         for i in range(1, len(path)):
             r0, c0 = path[i - 1]
             r1, c1 = path[i]
-            direction = (r1 - r0, c1 - c0)
+            direction = (r1 - r0, c1 - c0) #by finding the difference in values between the current and prev x and y values we can see if the sphero continues to travel in x or y direction
 
             if prev_direction is None:
                 prev_direction = direction
@@ -78,6 +81,11 @@ class Planner:
         """
         Simple A* over the occupancy grid.
 
+        f = g + h
+        - f: total estimated cost of the path through the current node to the goal. A* prioritises the node with the lowest f
+        - g: actual cost already travelled from the start node to the current node.
+        - h: is the heuristic cost, estimated remaining cost from the current node to the goal, using the Manhattan distance because movement is only up/down/left/right
+
         Inputs:
             state : current state [x, y, heading, speed] (world frame)
             goal  : goal position [x, y] (world frame)
@@ -88,15 +96,19 @@ class Planner:
         start = self.world_to_grid(state[:2])
         end = self.world_to_grid(goal)
 
-        # Standard A* bookkeeping
-        open_set = [(0, start)]
+        open_set = [(0, start)]  #priority queue of discovered nodes prioritised by their f value   
         came_from = {}
-        cost_so_far = {start: 0}
+        cost_so_far = {start: 0}  #dictionary that stores each discovered node with its g cost
 
-        def heuristic(a, b):
-            return abs(a[0] - b[0]) + abs(a[1] - b[1])
+        def heuristic(cell_next, cell_end):
+            return abs(cell_next[0] - cell_end[0]) + abs(cell_next[1] - cell_end[1]) #calculates the distance between next cell  
 
         found = False
+
+        #A* loop: 
+        # run neighbours function to locate neighbouring cells
+        # for each one of these new cells find the g cost by adding 1
+        # if the next cell is not in 
         while open_set:
             _, current = heapq.heappop(open_set)
 
@@ -105,11 +117,11 @@ class Planner:
                 break
 
             for next_cell in self.neighbours(current):
-                new_cost = cost_so_far[current] + 1
-                if next_cell not in cost_so_far or new_cost < cost_so_far[next_cell]:
-                    cost_so_far[next_cell] = new_cost
-                    priority = new_cost + heuristic(next_cell, end)
-                    heapq.heappush(open_set, (priority, next_cell))
+                new_cost = cost_so_far[current] + 1 #update the new current cost by 1 (we can only go to neighbouring cells)
+                if next_cell not in cost_so_far or new_cost < cost_so_far[next_cell]: 
+                    cost_so_far[next_cell] = new_cost #update the g cost
+                    priority = new_cost + heuristic(next_cell, end) #f = g + h
+                    heapq.heappush(open_set, (priority, next_cell)) #add newly discovered waypoint to the queue prioritised by f value
                     came_from[next_cell] = current
 
         if not found:
@@ -120,7 +132,7 @@ class Planner:
         path = [end]
         while path[-1] != start:
             path.append(came_from[path[-1]])
-        path.reverse()
+        path.reverse() #need to reverse the array of points because we reconstructed it backwards
 
         # Keep only the turning points, so the robot drives in straight
         # lines between waypoints instead of stopping at every grid cell.
