@@ -8,7 +8,7 @@ import argparse
 import os
 import numpy as np
 
-from labs.lab3.Planner import *
+from .Planner import *
 from src.pid_control import *
 from src.shared_functions import *  # wrap_angle, get_log_path
 from sphero_env.envs.custom_maze_full import build_occupancy_grid
@@ -19,12 +19,12 @@ from contextlib import ExitStack, contextmanager
 
 LAB1_SEED = 0
 MAX_STEPS = 5000
-GOAL_TOLERANCE = 0.05
+GOAL_TOLERANCE = 0.03
 WAYPOINT_PAUSE_STEPS = 10  # steps to pause/settle at each waypoint before moving on
 map = build_occupancy_grid()
 
 # Rename this per run - becomes the folder under logs/lab3_logs/
-SESSION_NAME = "session1_SB-DAE7"
+SESSION_NAME = "session5_BP-02B9"
 
 # World-frame position of the maze's designated starting plate
 # (matches START_CELL in sphero_env.envs.custom_maze_full).

@@ -47,8 +47,8 @@ MAX_SPEED = 0.15  # m/s, matches Robot's vel_limit
 
 pid_distance = PID(
     kp=0.06,
-    ki=0.00,
-    kd=0.06,
+    ki=0.002,
+    kd=0.07,
     dt=0.1,
     output_limits=(0.0, MAX_SPEED),
     is_angle=False,
